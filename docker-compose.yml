@@ -1,0 +1,29 @@
+services:
+  ldlidar:
+    # The Arduino UNO Q's MPU is a 64-bit Arm Cortex-A53, so the image must be
+    # arm64. This is native when building/running ON the board; on an x86_64
+    # host it forces a cross-build (requires QEMU emulation — see README).
+    platform: linux/arm64
+    build:
+      context: .
+      # Override the repo/branch here if needed:
+      # args:
+      #   LDLIDAR_BRANCH: master
+    image: ldlidar_stl_ros2:jazzy-arm64
+    container_name: ldlidar
+    # Serial device passthrough. Adjust to the actual LiDAR device on the host.
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    # X11 forwarding so rviz2 / viewer launch files can display on the host.
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # host networking simplifies ROS 2 DDS discovery with other machines/containers.
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    # Default: drop into a shell. Override with `docker compose run` to launch nodes.
+    command: bash

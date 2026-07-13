@@ -1,0 +1,2 @@
+# Exported arm64 image tarballs produced by build-arm64.sh
+*.tar

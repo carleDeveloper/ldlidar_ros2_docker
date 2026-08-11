@@ -3,7 +3,8 @@
 # Expects HPS3DUser_IF.h, HPS3DBase_IF.h, and libHPS3DSDK.so (renamed from
 # the appropriate architecture-specific file, e.g.
 # libHPS3DSDK_aarch64_1-8-6.so on the UNO Q) to be present in this same
-# directory. See README.md for the deployment steps that stage these files.
+# directory. See docs/unoq-hps3d160.md for the deployment steps that stage
+# these files.
 #
 # Usage: make -f Makefile.hps3d160_stream
 

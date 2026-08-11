@@ -2,6 +2,7 @@
 # so docs, compose, the cross-build helper, and exported image tars are not
 # uploaded to the daemon on every build.
 README.md
+docs/
 docker-compose.yml
 build-arm64.sh
 *.tar

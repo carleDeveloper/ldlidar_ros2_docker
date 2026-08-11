@@ -245,6 +245,32 @@ while the viewer smoothly redraws the latest available frame at ~30fps
 regardless. If a higher native sensor frame rate matters, check the
 device's HDR/exposure settings via the vendor's Windows client software.
 
+Both `hps3d160_stream` and `pointcloud_viewer.py` auto-reconnect (see
+code comments), so they can be started/restarted in either order.
+
+#### Auto-starting the streamer on boot
+`hps3d160-stream.service` runs `hps3d160_stream` automatically on the
+UNO Q, after `usb-role-host.service` and networking are up, and restarts
+it if it ever exits (e.g. an actual sensor disconnect):
+```bash
+scp hps3d160-stream.service arduino@<board-ip>:~/
+ssh arduino@<board-ip> '\
+  sudo mv ~/hps3d160-stream.service /etc/systemd/system/ && \
+  sudo systemctl daemon-reload && \
+  sudo systemctl enable --now hps3d160-stream.service'
+```
+The unit hardcodes the viewer's host/port (`192.168.1.169 5555`) in its
+`ExecStart` line — update that and run `sudo systemctl restart
+hps3d160-stream.service` if either changes. It also sets
+`WorkingDirectory` to the build directory, since `hps3d160_stream` was
+linked with a relative rpath (`-rpath=./`) that only resolves against
+`libHPS3DSDK.so` if the process's cwd matches; without this, systemd
+fails the unit with an `error while loading shared libraries` / exit
+code 127.
+
+With this service running, only `pointcloud_viewer.py` needs to be
+started manually after a power cycle.
+
 ### Restoring after an App Lab OS re-flash
 An App Lab "Flash Board" operation wipes the eMMC, so all of the above is
 lost: SSH host keys regenerate, `authorized_keys` is gone, and the systemd

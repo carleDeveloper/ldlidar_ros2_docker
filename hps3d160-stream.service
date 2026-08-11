@@ -1,0 +1,34 @@
+[Unit]
+Description=Stream HPS-3D160 point cloud to the desktop viewer
+# Must run after the USB-C port is forced into host mode (otherwise
+# /dev/ttyACM0 never appears), and after networking is up (so connecting
+# out to the viewer's TCP port can succeed).
+After=usb-role-host.service network-online.target
+Wants=usb-role-host.service network-online.target
+
+[Service]
+Type=simple
+User=arduino
+# hps3d160_stream was built with a relative rpath (-rpath=./), which only
+# resolves against libHPS3DSDK.so if the process's cwd is the build dir.
+WorkingDirectory=/home/arduino/hps3d160_stream_build
+# Wait for the sensor's serial device to be enumerated before starting --
+# udev may take a moment after usb-role-host.service completes.
+ExecStartPre=/bin/sh -c '\
+  for i in $(seq 1 50); do \
+    [ -e /dev/ttyACM0 ] && exit 0; \
+    sleep 0.2; \
+  done; \
+  echo "/dev/ttyACM0 not found" >&2; \
+  exit 1'
+# Update the receiver host/port here if the desktop's IP or the viewer's
+# --port ever changes, then: sudo systemctl restart hps3d160-stream.service
+ExecStart=/home/arduino/hps3d160_stream_build/hps3d160_stream 192.168.1.169 5555 /dev/ttyACM0
+# hps3d160_stream already retries the TCP connection internally without
+# exiting; Restart=always is a second safety net for anything that does
+# make it exit (e.g. an actual sensor disconnect via HPS3D_DISCONNECT_EVEN).
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

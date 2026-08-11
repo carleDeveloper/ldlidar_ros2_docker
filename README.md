@@ -94,6 +94,39 @@ ssh uno-q rm -f ~/ldlidar_stl_ros2_jazzy_arm64.tar  # on the board
 ```
 `*.tar` is git-ignored, so tarballs are never committed.
 
+## Build verification (native x86_64 host)
+Verified the current `Dockerfile` still builds cleanly and the resulting
+image runs correctly on a native x86_64 dev machine (no QEMU needed for this
+check, unlike the arm64 path above):
+```bash
+docker build -t ldlidar_stl_ros2:jazzy .
+```
+Build completed with only a pre-existing upstream compiler warning
+(uninitialized `serial_port_baudrate` in `demo.cpp`), no errors.
+
+Confirmed the package and its executables are present:
+```bash
+docker run --rm ldlidar_stl_ros2:jazzy bash -lc \
+  "uname -m; ros2 pkg executables ldlidar_stl_ros2"
+```
+Output: `x86_64`, with both executables listed (`ldlidar_stl_ros2`,
+`ldlidar_stl_ros2_node`) — the x86_64 equivalent of the `aarch64` check in
+step 5 of the deployment walkthrough above.
+
+Also ran the node directly with no launch parameters, to confirm the binary
+and its shared libraries actually load (not just that the CLI lists them):
+```bash
+docker run --rm ldlidar_stl_ros2:jazzy bash -lc \
+  "source /opt/ros/jazzy/setup.bash; source /ros2_ws/install/setup.bash; \
+   ros2 run ldlidar_stl_ros2 ldlidar_stl_ros2_node"
+```
+It initializes, logs `LDLiDAR SDK Pack Version is: v3.0.3` (matching the
+pinned tag), and exits with an expected application-level error
+(`Error, input <product_name> is illegal`) since no launch parameters were
+supplied — confirming the node itself runs correctly, as opposed to a
+missing-library or exec-format failure. Testing against real LiDAR hardware
+still requires the appropriate `port_name`/`product_name` launch parameters.
+
 ## Run
 
 ### 1. Grant access to the serial device (on the UNO Q)

@@ -137,7 +137,7 @@ def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
     return colors
 
 
-def remap_for_display(xyz: np.ndarray, invert_vertical: bool) -> np.ndarray:
+def remap_for_display(xyz: np.ndarray, invert_vertical: bool, mirror_lr: bool) -> np.ndarray:
     """The sensor's native axes are X=left/right, Y=vertical, Z=depth
     (forward from the sensor). pyqtgraph's GLViewWidget always treats Z as
     "up" for its orbit camera and for GLGridItem's ground plane, so we
@@ -145,15 +145,27 @@ def remap_for_display(xyz: np.ndarray, invert_vertical: bool) -> np.ndarray:
     makes mouse-drag orbiting behave like a normal 3D viewer (rotate
     around true vertical, tilt up/down) instead of an arbitrary axis.
 
-    We don't know the sign of the sensor's Y axis for certain (some depth
-    cameras use Y-down like image rows); --invert-vertical flips it if the
-    scene looks upside down.
+    IMPORTANT: swapping two axes (Y<->Z here) is a single transposition,
+    which always reverses handedness -- i.e. it mirrors the scene into its
+    mirror image, not just a harmless relabeling. We negate X below to
+    compensate and restore a proper (non-mirrored) 3D scene. Without this,
+    every previous version of this function was rendering a mirror image.
+
+    Two genuinely unresolvable-from-code ambiguities remain, since we have
+    no ground truth for the sensor's exact mounting/scan-line convention:
+    - the sign of the vertical axis (some depth cameras use Y-down like
+      image rows) -- toggle with --invert-vertical if it's upside down.
+    - which physical side ends up as "left" after the above fix -- toggle
+      with --mirror-lr if left/right still doesn't match reality. Verify
+      empirically: place an object to one known physical side of the
+      sensor and check which side it renders on.
     """
     x = xyz[:, 0]
     y = xyz[:, 1]
     z = xyz[:, 2]
     vertical = -y if invert_vertical else y
-    return np.stack([x, z, vertical], axis=-1)
+    horizontal = x if mirror_lr else -x
+    return np.stack([horizontal, z, vertical], axis=-1)
 
 
 def main():
@@ -167,6 +179,8 @@ def main():
                          help="number of discrete distance color bands (near=red, far=blue)")
     parser.add_argument("--invert-vertical", action="store_true",
                          help="flip the vertical axis if the scene renders upside down")
+    parser.add_argument("--mirror-lr", action="store_true",
+                         help="flip left/right if it still doesn't match reality after the built-in mirror fix")
     parser.add_argument("--axis-size", type=float, default=500.0,
                          help="length (mm) of the XYZ axis gizmo at the sensor's origin")
     args = parser.parse_args()
@@ -174,8 +188,10 @@ def main():
     print("Controls: left-drag to orbit, right-drag/scroll to zoom, middle-drag to pan.")
     print("Axis legend at the sensor's origin (0,0,0): "
           "RED = X (left/right), GREEN = depth (forward from sensor), BLUE = vertical"
-          + (" [inverted]" if args.invert_vertical else "") + ".")
+          + (" [inverted]" if args.invert_vertical else "")
+          + (" [mirrored]" if args.mirror_lr else "") + ".")
     print("If the scene looks upside down, restart with --invert-vertical.")
+    print("If left/right still doesn't match reality, restart with --mirror-lr.")
 
     receiver = FrameReceiver(args.host, args.port)
     receiver.start()
@@ -224,7 +240,7 @@ def main():
         if xyz is None:
             return
         colors = make_banded_colors(xyz[:, 2], args.bands)  # color by native depth (sensor Z)
-        plotted = remap_for_display(xyz, args.invert_vertical)
+        plotted = remap_for_display(xyz, args.invert_vertical, args.mirror_lr)
         scatter.setData(pos=plotted, color=colors, size=args.point_size)
 
         render_frame_count += 1

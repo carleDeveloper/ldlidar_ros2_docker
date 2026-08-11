@@ -1,2 +1,5 @@
 # Exported arm64 image tarballs produced by build-arm64.sh
 *.tar
+
+# UNO Q config backups from backup_unoq_config.sh (contain Wi-Fi PSK in plaintext)
+unoq-backup-*.tar.gz

@@ -196,6 +196,55 @@ validate the USB-C host-mode wiring):
   Copy it off the board afterward; it contains the Wi-Fi password in
   plaintext, so it's git-ignored and must never be committed.
 
+### Real-time point cloud streaming and visualization
+Builds a live 3D point cloud from the HPS-3D160-U and displays it on a
+separate machine's monitor, using Hypersen's official MIT-licensed
+[`hypersen/HPS3D_SDK`](https://github.com/hypersen/HPS3D_SDK) on the board
+(no ROS2 install needed) and a lightweight TCP stream to a desktop viewer:
+- `hps3d160_stream.c` / `Makefile.hps3d160_stream` — runs on the UNO Q.
+  Uses the SDK to start continuous capture and streams each frame's
+  already-computed XYZ point cloud (`HPS3D_PerPointCloudData_t`, no manual
+  FOV/angle math needed) over a plain TCP socket, as a raw little-endian
+  binary frame: `[points:u32][width:u16][height:u16][frame_cnt:u32][xyz
+  float32 x points]`.
+- `pointcloud_viewer.py` — runs on a machine with a display (e.g. this
+  desktop). Listens for the board's TCP connection and renders the point
+  cloud with `pyqtgraph`'s OpenGL `GLScatterPlotItem` (color-graded
+  red=near/blue=far), redrawn on a fixed Qt timer independent of the
+  sensor's own frame rate.
+
+Setup (one-time, on the UNO Q):
+```bash
+sudo apt-get install -y build-essential
+git clone --depth 1 https://github.com/hypersen/HPS3D_SDK.git
+cp HPS3D_SDK/V1.8/Example/HPS3D160-Linux-C_Demo/HPS3DUser_IF.h \
+   HPS3D_SDK/V1.8/Example/HPS3D160-Linux-C_Demo/HPS3DBase_IF.h \
+   HPS3D_SDK/V1.8/lib/Linux/libHPS3DSDK_aarch64_1-8-6.so ./
+cp libHPS3DSDK_aarch64_1-8-6.so libHPS3DSDK.so
+make -f Makefile.hps3d160_stream
+```
+(Pick the correct architecture-specific `.so` under `lib/Linux/` if not
+aarch64 — the SDK ships `x86_64`, `arm32`, `arm64`/`aarch64` builds.)
+
+Run (viewer first, then the board):
+```bash
+# on the display machine
+python3 pointcloud_viewer.py --port 5555 --fps 30
+
+# on the UNO Q
+./hps3d160_stream <viewer-host-ip> 5555 /dev/ttyACM0
+```
+Requires `python-pyqtgraph`, `python-pyqt6`, `python-numpy`, and
+`python-opengl` (all in Arch's official `extra` repo) on the viewer
+machine.
+
+Note: 30fps is the viewer's *render* target, not a guarantee of the
+sensor's actual output rate — in testing the sensor itself sustained
+~13.6fps (likely HDR/integration-time limited under ambient lighting),
+while the viewer smoothly redraws the latest available frame at ~30fps
+regardless. If a higher native sensor frame rate matters, check the
+device's HDR/exposure settings via the vendor's Windows client software.
+
 ### Restoring after an App Lab OS re-flash
 An App Lab "Flash Board" operation wipes the eMMC, so all of the above is
 lost: SSH host keys regenerate, `authorized_keys` is gone, and the systemd

@@ -1,0 +1,25 @@
+# Builds hps3d160_stream against Hypersen's HPS3D_SDK.
+#
+# Expects HPS3DUser_IF.h, HPS3DBase_IF.h, and libHPS3DSDK.so (renamed from
+# the appropriate architecture-specific file, e.g.
+# libHPS3DSDK_aarch64_1-8-6.so on the UNO Q) to be present in this same
+# directory. See README.md for the deployment steps that stage these files.
+#
+# Usage: make -f Makefile.hps3d160_stream
+
+CC = gcc
+CFLAGS = -Wall -O2
+TARGET = hps3d160_stream
+
+all: $(TARGET)
+
+$(TARGET): hps3d160_stream.o
+	$(CC) hps3d160_stream.o -o $(TARGET) -Wl,-rpath=./ -L./ -lHPS3DSDK
+
+hps3d160_stream.o: hps3d160_stream.c
+	$(CC) $(CFLAGS) -c hps3d160_stream.c -o hps3d160_stream.o
+
+clean:
+	rm -f *.o $(TARGET)
+
+.PHONY: all clean

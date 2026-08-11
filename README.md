@@ -178,3 +178,52 @@ ros2 topic echo /scan
   `pthread_mutex_*` without including `<pthread.h>`, which fails to compile on
   Ubuntu 24.04 / GCC 13. The Dockerfile injects the missing include after
   cloning, so no manual edit is required.
+
+## UNO Q Linux-side utilities (USB host mode + HPS-3D160 verification)
+Separate from the ROS 2 driver above, this repo also tracks a few files used
+to configure the UNO Q's own Linux side so it can act as a USB host for an
+attached HPS-3D160-U lidar (a different sensor from the LD19, used here to
+validate the USB-C host-mode wiring):
+- `usb-role-host.service` — a systemd oneshot unit that forces the shared
+  USB-C port into host mode on every boot, by writing `host` to
+  `/sys/class/usb_role/4e00000.usb-role-switch/role`.
+- `verify_hps3d160.py` — sends the HPS-3D160's documented "read device
+  address" command over `/dev/ttyACM0` and checks the response, to confirm
+  the lidar link is alive.
+- `backup_unoq_config.sh` — run with `sudo` on the board **before** an App
+  Lab OS re-flash. Archives the two files above, SSH `authorized_keys`, and
+  Wi-Fi connection profiles into `/tmp/unoq-backup-<timestamp>.tar.gz`.
+  Copy it off the board afterward; it contains the Wi-Fi password in
+  plaintext, so it's git-ignored and must never be committed.
+
+### Restoring after an App Lab OS re-flash
+An App Lab "Flash Board" operation wipes the eMMC, so all of the above is
+lost: SSH host keys regenerate, `authorized_keys` is gone, and the systemd
+unit/script no longer exist. To restore (assuming Wi-Fi is already
+reconnected via App Lab's first-boot wizard, so the board is reachable at
+its usual IP):
+1. Clear the stale SSH host key and re-authenticate:
+   ```bash
+   ssh-keygen -R <board-ip>
+   ssh-copy-id arduino@<board-ip>   # prompts for the board's password
+   ```
+2. Copy the two files back from this repo and reinstall the service:
+   ```bash
+   scp usb-role-host.service verify_hps3d160.py arduino@<board-ip>:~/
+   ssh arduino@<board-ip> '\
+     sudo mv ~/usb-role-host.service /etc/systemd/system/usb-role-host.service && \
+     sudo systemctl daemon-reload && \
+     sudo systemctl enable --now usb-role-host.service'
+   ```
+3. Verify it took effect:
+   ```bash
+   ssh arduino@<board-ip> '\
+     cat /sys/class/usb_role/4e00000.usb-role-switch/role; \
+     python3 ~/verify_hps3d160.py /dev/ttyACM0'
+   ```
+   Expect `host` and a response frame starting with `f5 5f`.
+
+Everything needed for this recovery already lives in git — the pre-reflash
+backup tarball from `backup_unoq_config.sh` is a convenience/fallback, not a
+requirement, since `usb-role-host.service` and `verify_hps3d160.py` are
+already tracked here.

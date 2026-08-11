@@ -60,6 +60,9 @@ def main():
                         help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
                         help="number of discrete distance color bands (near=red, far=violet)")
+    parser.add_argument("--edge-filter-mm", type=float, default=300.0,
+                        help="hide 'flying pixel' points whose depth jumps by more than this many "
+                             "mm from an adjacent pixel in the sensor's scan grid; 0 disables")
     parser.add_argument("--invert-vertical", action="store_true",
                         help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",
@@ -147,9 +150,13 @@ def main():
     def show_frame():
         idx = state["index"]
         # Frames are stored as (height, width, 3) to preserve the sensor grid;
-        # flatten back to the (N, 3) point list the render path expects.
-        xyz = data[frame_keys[idx]].reshape(-1, 3)
-        colors = make_banded_colors(xyz[:, 2], args.bands)  # color by native depth (sensor Z)
+        # grab the grid dims (for the edge filter) before flattening to the
+        # (N, 3) point list the render path expects.
+        frame = data[frame_keys[idx]]
+        height, width = frame.shape[:2] if frame.ndim == 3 else (None, None)
+        xyz = frame.reshape(-1, 3)
+        colors = make_banded_colors(xyz[:, 2], args.bands, width, height,
+                                    args.edge_filter_mm)  # color by native depth (sensor Z)
         scatter.setData(pos=remap_for_display(xyz, args.invert_vertical, args.mirror_lr),
                         color=colors, size=args.point_size)
 

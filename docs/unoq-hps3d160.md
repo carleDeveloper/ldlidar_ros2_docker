@@ -109,11 +109,11 @@ Replay controls: space pauses/resumes, left/right steps a single frame,
 home/end jumps to the first/last frame; the mouse orbits/zooms/pans as in
 the live viewer. Playback holds on the final frame unless `--loop` is
 given. The rendering flags (`--point-size`, `--bands`, `--invert-vertical`,
-`--mirror-lr`, `--axis-size`) behave identically in both tools, and
-`pointcloud_replay.py` imports the color-banding and axis-remapping
-helpers from `pointcloud_viewer.py` rather than duplicating them, so the
-two can't drift apart on the mirroring subtleties documented in
-`remap_for_display()`. It does mean both files need to sit side by side.
+`--mirror-lr`, `--axis-size`, `--edge-filter-mm`) behave identically in
+both tools, and `pointcloud_replay.py` imports the color-banding and
+axis-remapping helpers from `pointcloud_viewer.py` rather than duplicating
+them, so the two can't drift apart on the mirroring subtleties documented
+in `remap_for_display()`. It does mean both files need to sit side by side.
 
 What gets saved, and the file layout:
 - **Every frame received off the socket** is recorded, not just the ones
@@ -145,6 +145,38 @@ xyz = data["frame_000042"]   # (60, 160, 3) float32, mm, sensor axes
 > on close. Ctrl+C and `SIGTERM` finalize the archive cleanly, but a
 > `SIGKILL` or power loss leaves the file unreadable *in its entirety*,
 > not merely truncated. Don't `kill -9` a long capture you care about.
+
+### Depth-quality filtering
+Two point-level filters run before color banding, in both `pointcloud_viewer.py`
+and `pointcloud_replay.py` (shared via `make_banded_colors()`):
+- **No-return sentinel rejection.** The HPS-3D160 reports a fixed,
+  physically implausible depth (~65300-65500mm, near the max 16-bit
+  millimeter value) for pixels with no valid return, rather than marking
+  them invalid outright -- and it can be a sizeable minority of a frame.
+  Left in, that sentinel would dominate the near/far range used for color
+  banding and crush all real scene depth into a couple of bands
+  (near-monochrome). It's excluded via a fixed 20m cutoff rather than a
+  statistical (e.g. median-based) outlier filter: a statistical filter
+  can't distinguish "sentinel" from "real object that's just far from
+  everything else in frame" -- a scene dominated by a nearby, uniform
+  wall has a tiny statistical spread, so a real person standing further
+  away would read as a huge outlier and get wrongly hidden entirely. A
+  fixed physical cutoff, safely between any real indoor reading and the
+  sentinel, has no such failure mode.
+- **Flying-pixel edge filter (`--edge-filter-mm`, default 300, 0
+  disables).** Pixels straddling an object's silhouette see a mix of
+  light from the object and from whatever is behind it, and report a
+  blended depth between the two rather than either real surface. On a
+  moving object the blend ratio drifts frame to frame as the edge sweeps
+  across each pixel, which reads as edges looking "liquid"/fuzzy rather
+  than crisp. These are detected by comparing each pixel's depth to its
+  immediate neighbors in the sensor's scan grid (row/column-adjacent, not
+  3D-adjacent) -- a real continuous surface changes gradually between
+  neighbors, while a flying pixel jumps sharply toward the surface behind
+  it. This needs the frame's width/height to know which points are
+  grid-adjacent; `pointcloud_replay.py` gets it for free from each stored
+  frame's `(height, width, 3)` shape, while the live viewer's
+  `FrameReceiver` tracks it alongside each frame's points.
 
 ## Restoring after an App Lab OS re-flash
 An App Lab "Flash Board" operation wipes the eMMC, so all of the above is

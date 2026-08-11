@@ -56,6 +56,29 @@ _BAND_HUE_SWEEP = 0.85
 # Alternate-band brightness (vs. full value=1.0), for boundary contrast between
 # neighboring bands whose hues land close together -- see _band_palette().
 _BAND_DIM_VALUE = 0.6
+# Depth (mm) at/beyond which a reading is treated as the sensor's "no valid
+# return" sentinel rather than a real surface -- see make_banded_colors().
+# Observed sentinel values are ~65300-65500mm, near the max representable
+# 16-bit millimeter value; this HPS-3D160 has a normal indoor working range
+# of a few meters, so a fixed cutoff at 20m leaves an order-of-magnitude
+# margin on both sides without ever excluding real scene depth.
+#
+# A per-frame *statistical* outlier filter (e.g. median absolute deviation)
+# was tried here first and reverted: it can't tell "sentinel" apart from
+# "real object that's simply far from the rest of the frame". A scene
+# dominated by a nearby, uniform surface (e.g. a wall or floor) has a tiny
+# statistical spread, so a real person standing further away reads as a
+# huge outlier relative to that spread and gets hidden entirely -- silently
+# erasing exactly the kind of foreground object depth banding exists to
+# highlight. A fixed physical cutoff has no such failure mode, since it
+# doesn't depend on what else is in the frame.
+_NO_RETURN_DEPTH_MM = 20000.0
+# Default threshold (mm) for _mask_flying_pixels(): a depth jump larger than
+# this between two adjacent pixels in the sensor's scan grid is treated as a
+# "flying pixel" -- see that function's docstring. 300mm comfortably exceeds
+# the sensor's own measurement noise on a continuous surface, while still
+# being far smaller than the near/far gap at a typical object silhouette.
+_FLYING_PIXEL_MAX_NEIGHBOR_DIFF_MM = 300.0
 
 
 class FrameRecorder(threading.Thread):
@@ -130,13 +153,15 @@ class FrameReceiver(threading.Thread):
         self.recorder = recorder
         self._lock = threading.Lock()
         self._latest_points = None  # np.ndarray shape (N, 3), or None
+        self._width = None
+        self._height = None
         self._frame_cnt = None
         self.connected_event = threading.Event()
         self.stop_event = threading.Event()
 
     def get_latest(self):
         with self._lock:
-            return self._latest_points, self._frame_cnt
+            return self._latest_points, self._width, self._height, self._frame_cnt
 
     def _recv_exact(self, conn: socket.socket, n: int) -> bytes:
         buf = bytearray()
@@ -179,6 +204,8 @@ class FrameReceiver(threading.Thread):
                         xyz = np.frombuffer(payload, dtype="<f4").reshape(points, 3)
                         with self._lock:
                             self._latest_points = xyz
+                            self._width = width
+                            self._height = height
                             self._frame_cnt = frame_cnt
                         if self.recorder is not None:
                             self.recorder.submit(xyz, width, height, frame_cnt)
@@ -217,14 +244,71 @@ def _band_palette(num_bands: int) -> np.ndarray:
     return palette
 
 
-def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
+def _mask_flying_pixels(z_grid: np.ndarray, max_diff_mm: float) -> np.ndarray:
+    """Given depth shaped (height, width) -- NaN for already-invalid pixels
+    -- return a same-shape boolean mask, True where a pixel is *not* a
+    "flying pixel".
+
+    Depth-camera pixels straddling the silhouette of an object see a mix of
+    light returning from that object and from whatever is behind it, and
+    report a blended depth somewhere between the two rather than either
+    real surface. This is normally a minor, static fringe of bad pixels
+    right at an edge, but on a *moving* object the blend ratio drifts
+    frame to frame as the edge sweeps across each pixel, so the reported
+    depth (and therefore the point's rendered position/band color) wobbles
+    between the near and far surface from frame to frame -- which is what
+    reads as edges "liquid"/fuzzy rather than a crisp boundary.
+
+    Flying pixels are a real return, not the sensor's explicit no-return
+    sentinel, so they aren't caught by the >0/isfinite/_NO_RETURN_DEPTH_MM
+    checks above. What does identify them is that they sit between two
+    real surfaces at very different depths, so they show a large depth
+    jump to an immediate grid neighbor that a continuous surface wouldn't.
+    Pixels already NaN (invalid for other reasons) can't be compared
+    meaningfully; NaN comparisons are False in numpy, so they're correctly
+    treated as "unknown" here rather than falsely flagged as edges.
+    """
+    ok = np.ones(z_grid.shape, dtype=bool)
+    diff_h = np.abs(np.diff(z_grid, axis=1)) > max_diff_mm
+    ok[:, :-1] &= ~diff_h
+    ok[:, 1:] &= ~diff_h
+    diff_v = np.abs(np.diff(z_grid, axis=0)) > max_diff_mm
+    ok[:-1, :] &= ~diff_v
+    ok[1:, :] &= ~diff_v
+    return ok
+
+
+def make_banded_colors(z: np.ndarray, num_bands: int, width: int = None, height: int = None,
+                       edge_filter_mm: float = _FLYING_PIXEL_MAX_NEIGHBOR_DIFF_MM) -> np.ndarray:
     """Quantize depth (Z) into `num_bands` discrete color bands (near=red,
     far=violet), instead of a smooth gradient, so distance steps are
-    visually distinct (like contour-map bands)."""
-    valid = np.isfinite(z) & (z > 0)
+    visually distinct (like contour-map bands).
+
+    The HPS-3D160 emits a fixed, physically implausible depth (observed:
+    ~65300-65500mm, see _NO_RETURN_DEPTH_MM) for "no valid return" pixels
+    rather than marking them invalid outright, and it can be a sizeable
+    minority of a frame (seen up to ~20%). Left in, those points
+    single-handedly dominate the near/far range the bands are stretched
+    across, crushing all *real* scene depth into the first band or two --
+    the scene ends up looking almost monochrome regardless of --bands.
+    Excluding readings at/beyond that cutoff, the same way already-invalid
+    (<=0 or non-finite) points are excluded, keeps the near/far range tied
+    to genuine surfaces.
+
+    If `width`/`height` are given and match `len(z)`, also hides "flying
+    pixel" edge artifacts -- see _mask_flying_pixels(). Pass edge_filter_mm
+    <= 0 to disable just that part.
+    """
+    valid = np.isfinite(z) & (z > 0) & (z < _NO_RETURN_DEPTH_MM)
     colors = np.zeros((len(z), 4), dtype=np.float32)
     if not np.any(valid):
         return colors
+
+    if width and height and edge_filter_mm > 0 and width * height == len(z):
+        z_grid = np.where(valid, z, np.nan).reshape(height, width)
+        edge_ok = _mask_flying_pixels(z_grid, edge_filter_mm).reshape(-1)
+        if np.any(valid & edge_ok):  # don't filter everything away
+            valid &= edge_ok
 
     zmin, zmax = z[valid].min(), z[valid].max()
     span = max(zmax - zmin, 1e-6)
@@ -234,7 +318,7 @@ def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
     palette = _band_palette(num_bands)
     colors[:, :3] = palette[band_idx]
     colors[:, 3] = 1.0
-    colors[~valid] = 0.0  # hide invalid points (alpha 0)
+    colors[~valid] = 0.0  # hide invalid/out-of-range/flying-pixel points (alpha 0)
     return colors
 
 
@@ -278,6 +362,10 @@ def main():
                          help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
                          help="number of discrete distance color bands (near=red, far=violet)")
+    parser.add_argument("--edge-filter-mm", type=float, default=_FLYING_PIXEL_MAX_NEIGHBOR_DIFF_MM,
+                         help="hide 'flying pixel' points whose depth jumps by more than this many "
+                              "mm from an adjacent pixel in the sensor's scan grid -- removes the "
+                              "liquid/fuzzy blur these cause at moving object edges; 0 disables")
     parser.add_argument("--invert-vertical", action="store_true",
                          help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",
@@ -369,10 +457,11 @@ def main():
 
     def update():
         nonlocal render_frame_count
-        xyz, frame_cnt = receiver.get_latest()
+        xyz, width, height, frame_cnt = receiver.get_latest()
         if xyz is None:
             return
-        colors = make_banded_colors(xyz[:, 2], args.bands)  # color by native depth (sensor Z)
+        # color by native depth (sensor Z)
+        colors = make_banded_colors(xyz[:, 2], args.bands, width, height, args.edge_filter_mm)
         plotted = remap_for_display(xyz, args.invert_vertical, args.mirror_lr)
         scatter.setData(pos=plotted, color=colors, size=args.point_size)
 

@@ -3,3 +3,7 @@
 
 # UNO Q config backups from backup_unoq_config.sh (contain Wi-Fi PSK in plaintext)
 unoq-backup-*.tar.gz
+
+# Python bytecode cache, created whenever pointcloud_replay.py imports
+# pointcloud_viewer.py
+__pycache__/

@@ -23,6 +23,7 @@ Usage:
     python3 pointcloud_viewer.py [--host 0.0.0.0] [--port 5555] [--fps 30]
 """
 import argparse
+import colorsys
 import socket
 import struct
 import sys
@@ -90,17 +91,33 @@ class FrameReceiver(threading.Thread):
                 conn.close()
 
 
-def make_colors(z: np.ndarray) -> np.ndarray:
-    """Simple near=red / far=blue color gradient based on depth (Z)."""
+def _band_palette(num_bands: int) -> np.ndarray:
+    """One solid RGB color per band, sweeping red (near) -> blue (far)
+    through the hue wheel (like a contour-map legend)."""
+    palette = np.zeros((num_bands, 3), dtype=np.float32)
+    for i in range(num_bands):
+        t_band = i / max(num_bands - 1, 1)
+        hue = (1.0 - t_band) * 0.66  # 0.66*360=240deg (blue) -> 0deg (red)
+        palette[i] = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+    return palette
+
+
+def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
+    """Quantize depth (Z) into `num_bands` discrete color bands (near=red,
+    far=blue), instead of a smooth gradient, so distance steps are
+    visually distinct (like contour-map bands)."""
     valid = np.isfinite(z) & (z > 0)
+    colors = np.zeros((len(z), 4), dtype=np.float32)
     if not np.any(valid):
-        return np.tile([1.0, 1.0, 1.0, 1.0], (len(z), 1))
+        return colors
+
     zmin, zmax = z[valid].min(), z[valid].max()
     span = max(zmax - zmin, 1e-6)
     t = np.clip((z - zmin) / span, 0.0, 1.0)
-    colors = np.zeros((len(z), 4), dtype=np.float32)
-    colors[:, 0] = 1.0 - t  # red near
-    colors[:, 2] = t  # blue far
+    band_idx = np.clip((t * num_bands).astype(int), 0, num_bands - 1)
+
+    palette = _band_palette(num_bands)
+    colors[:, :3] = palette[band_idx]
     colors[:, 3] = 1.0
     colors[~valid] = 0.0  # hide invalid points (alpha 0)
     return colors
@@ -111,6 +128,10 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="address to listen on")
     parser.add_argument("--port", type=int, default=5555, help="TCP port to listen on")
     parser.add_argument("--fps", type=float, default=30.0, help="target render rate")
+    parser.add_argument("--point-size", type=float, default=2.0,
+                         help="point size in pixels (smaller avoids overlapping points blending into a blob)")
+    parser.add_argument("--bands", type=int, default=10,
+                         help="number of discrete distance color bands (near=red, far=blue)")
     args = parser.parse_args()
 
     receiver = FrameReceiver(args.host, args.port)
@@ -127,7 +148,10 @@ def main():
     grid.setSpacing(100, 100)
     view.addItem(grid)
 
-    scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), size=3, pxMode=True)
+    scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), size=args.point_size, pxMode=True)
+    # Default 'additive' glOptions blends overlapping points into a single
+    # bright blob; 'opaque' keeps each point visually distinct.
+    scatter.setGLOptions("opaque")
     view.addItem(scatter)
 
     render_frame_count = 0
@@ -139,8 +163,8 @@ def main():
         xyz, frame_cnt = receiver.get_latest()
         if xyz is None:
             return
-        colors = make_colors(xyz[:, 2])
-        scatter.setData(pos=xyz, color=colors, size=3)
+        colors = make_banded_colors(xyz[:, 2], args.bands)
+        scatter.setData(pos=xyz, color=colors, size=args.point_size)
 
         render_frame_count += 1
         elapsed = render_window_start.elapsed() / 1000.0

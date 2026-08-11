@@ -158,7 +158,7 @@ def main():
             label += f"  (sensor frame_cnt={frame_info[idx, 0]})"
         if state["paused"]:
             label += "  [paused]"
-        status.setText(label)
+        status.setData(text=label)  # GLTextItem has no setText()
 
     def seek(idx: int):
         state["index"] = idx % len(frame_keys)

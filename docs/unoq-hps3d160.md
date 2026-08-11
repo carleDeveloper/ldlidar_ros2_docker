@@ -29,7 +29,8 @@ separate machine's monitor, using Hypersen's official MIT-licensed
 - `pointcloud_viewer.py` — runs on a machine with a display (e.g. this
   desktop). Listens for the board's TCP connection and renders the point
   cloud with `pyqtgraph`'s OpenGL `GLScatterPlotItem` (color-graded
-  red=near/blue=far), redrawn on a fixed Qt timer independent of the
+  red=near/violet=far, with alternating brightness between bands for
+  contrast), redrawn on a fixed Qt timer independent of the
   sensor's own frame rate. Can also record the stream to disk (see
   Recording and replaying captures below).
 - `pointcloud_replay.py` — plays a recording back in the same 3D view,

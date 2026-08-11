@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--point-size", type=float, default=2.0,
                         help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
-                        help="number of discrete distance color bands (near=red, far=blue)")
+                        help="number of discrete distance color bands (near=red, far=violet)")
     parser.add_argument("--invert-vertical", action="store_true",
                         help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",

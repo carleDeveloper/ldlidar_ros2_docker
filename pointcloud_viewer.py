@@ -49,6 +49,14 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 FRAME_HEADER_FMT = "<IHHI"  # points(u32), width(u16), height(u16), frame_cnt(u32)
 FRAME_HEADER_SIZE = struct.calcsize(FRAME_HEADER_FMT)
 
+# Fraction of the hue wheel used for depth banding: 0.0=red, up to ~0.85=violet.
+# Stops short of 1.0 so the far end (violet) stays visually distinct from the
+# near end (red) instead of wrapping back around to it.
+_BAND_HUE_SWEEP = 0.85
+# Alternate-band brightness (vs. full value=1.0), for boundary contrast between
+# neighboring bands whose hues land close together -- see _band_palette().
+_BAND_DIM_VALUE = 0.6
+
 
 class FrameRecorder(threading.Thread):
     """Background thread that appends every submitted frame to a .npz archive.
@@ -186,19 +194,32 @@ class FrameReceiver(threading.Thread):
 
 
 def _band_palette(num_bands: int) -> np.ndarray:
-    """One solid RGB color per band, sweeping red (near) -> blue (far)
-    through the hue wheel (like a contour-map legend)."""
+    """One color per band: hue sweeps red (band 0, near) -> violet (last
+    band, far) across most of the color wheel, like a contour-map legend.
+
+    Two things make bands easier to tell apart than a plain hue ramp:
+    - The sweep covers ~306 degrees (red through violet) rather than
+      stopping at blue, so there's more hue range to spread bands across
+      -- this matters most once --bands grows past ~10 and neighboring
+      bands would otherwise land on nearly-identical hues.
+    - Adjacent bands alternate brightness (full vs. dimmed). Even with
+      the wider sweep, two neighboring bands can still end up close in
+      hue; alternating brightness gives every band boundary a second,
+      hue-independent cue, the way contour maps alternate shading between
+      neighboring elevation bands.
+    """
     palette = np.zeros((num_bands, 3), dtype=np.float32)
     for i in range(num_bands):
         t_band = i / max(num_bands - 1, 1)
-        hue = (1.0 - t_band) * 0.66  # 0.66*360=240deg (blue) -> 0deg (red)
-        palette[i] = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        hue = t_band * _BAND_HUE_SWEEP
+        value = 1.0 if i % 2 == 0 else _BAND_DIM_VALUE
+        palette[i] = colorsys.hsv_to_rgb(hue, 1.0, value)
     return palette
 
 
 def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
     """Quantize depth (Z) into `num_bands` discrete color bands (near=red,
-    far=blue), instead of a smooth gradient, so distance steps are
+    far=violet), instead of a smooth gradient, so distance steps are
     visually distinct (like contour-map bands)."""
     valid = np.isfinite(z) & (z > 0)
     colors = np.zeros((len(z), 4), dtype=np.float32)
@@ -256,7 +277,7 @@ def main():
     parser.add_argument("--point-size", type=float, default=2.0,
                          help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
-                         help="number of discrete distance color bands (near=red, far=blue)")
+                         help="number of discrete distance color bands (near=red, far=violet)")
     parser.add_argument("--invert-vertical", action="store_true",
                          help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",

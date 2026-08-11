@@ -1,0 +1,23 @@
+[Unit]
+Description=Force UNO Q USB-C port into host mode (for USB-attached lidar)
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+  ROLE=/sys/class/usb_role/4e00000.usb-role-switch/role; \
+  for i in $(seq 1 50); do \
+    [ -e "$ROLE" ] && break; \
+    sleep 0.2; \
+  done; \
+  if [ -e "$ROLE" ]; then \
+    echo host > "$ROLE"; \
+  else \
+    echo "usb_role switch node not found" >&2; \
+    exit 1; \
+  fi'
+
+[Install]
+WantedBy=multi-user.target

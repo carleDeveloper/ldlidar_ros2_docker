@@ -69,11 +69,23 @@ class FrameReceiver(threading.Thread):
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((self.host, self.port))
         srv.listen(1)
+        srv.settimeout(1.0)  # let accept() re-check stop_event periodically
         print(f"Listening on {self.host}:{self.port} for the board's stream...")
 
         while not self.stop_event.is_set():
-            conn, addr = srv.accept()
+            try:
+                conn, addr = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError as exc:
+                print(f"accept() failed: {exc}; retrying...")
+                continue
+
             print(f"Connected: {addr}")
+            # Bound recv() so a dead peer that never sends a clean TCP close
+            # (e.g. power loss, network partition) doesn't block forever --
+            # we want to notice and go back to waiting for a new connection.
+            conn.settimeout(5.0)
             self.connected_event.set()
             try:
                 while not self.stop_event.is_set():
@@ -84,10 +96,12 @@ class FrameReceiver(threading.Thread):
                     with self._lock:
                         self._latest_points = xyz
                         self._frame_cnt = frame_cnt
-            except ConnectionError:
-                print("Board disconnected, waiting for a new connection...")
-                self.connected_event.clear()
+            except socket.timeout:
+                print("No data from board for 5s, assuming it's gone; waiting for a new connection...")
+            except (ConnectionError, OSError, struct.error, ValueError) as exc:
+                print(f"Board disconnected ({exc}), waiting for a new connection...")
             finally:
+                self.connected_event.clear()
                 conn.close()
 
 
@@ -123,6 +137,25 @@ def make_banded_colors(z: np.ndarray, num_bands: int) -> np.ndarray:
     return colors
 
 
+def remap_for_display(xyz: np.ndarray, invert_vertical: bool) -> np.ndarray:
+    """The sensor's native axes are X=left/right, Y=vertical, Z=depth
+    (forward from the sensor). pyqtgraph's GLViewWidget always treats Z as
+    "up" for its orbit camera and for GLGridItem's ground plane, so we
+    reorder into plotting axes X=left/right, Y=depth, Z=vertical. This
+    makes mouse-drag orbiting behave like a normal 3D viewer (rotate
+    around true vertical, tilt up/down) instead of an arbitrary axis.
+
+    We don't know the sign of the sensor's Y axis for certain (some depth
+    cameras use Y-down like image rows); --invert-vertical flips it if the
+    scene looks upside down.
+    """
+    x = xyz[:, 0]
+    y = xyz[:, 1]
+    z = xyz[:, 2]
+    vertical = -y if invert_vertical else y
+    return np.stack([x, z, vertical], axis=-1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0", help="address to listen on")
@@ -132,7 +165,17 @@ def main():
                          help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
                          help="number of discrete distance color bands (near=red, far=blue)")
+    parser.add_argument("--invert-vertical", action="store_true",
+                         help="flip the vertical axis if the scene renders upside down")
+    parser.add_argument("--axis-size", type=float, default=500.0,
+                         help="length (mm) of the XYZ axis gizmo at the sensor's origin")
     args = parser.parse_args()
+
+    print("Controls: left-drag to orbit, right-drag/scroll to zoom, middle-drag to pan.")
+    print("Axis legend at the sensor's origin (0,0,0): "
+          "RED = X (left/right), GREEN = depth (forward from sensor), BLUE = vertical"
+          + (" [inverted]" if args.invert_vertical else "") + ".")
+    print("If the scene looks upside down, restart with --invert-vertical.")
 
     receiver = FrameReceiver(args.host, args.port)
     receiver.start()
@@ -140,13 +183,30 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     view = gl.GLViewWidget()
     view.setWindowTitle("HPS-3D160 Point Cloud")
-    view.setCameraPosition(distance=2000)
+    # Oblique 3/4 view: elevation tilts up/down from the ground plane,
+    # azimuth rotates around the vertical axis. Depth increases along +Y
+    # (into the grid), vertical is +/-Z (up/down).
+    view.setCameraPosition(distance=2000, elevation=20, azimuth=-60)
     view.show()
 
     grid = gl.GLGridItem()
     grid.setSize(2000, 2000)
     grid.setSpacing(100, 100)
     view.addItem(grid)
+
+    axis = gl.GLAxisItem()
+    axis.setSize(args.axis_size, args.axis_size, args.axis_size)
+    view.addItem(axis)
+
+    def add_axis_label(pos, text, color):
+        label = gl.GLTextItem(pos=pos, text=text, color=color)
+        view.addItem(label)
+
+    a = args.axis_size * 1.05
+    add_axis_label([a, 0, 0], "X: left/right", (255, 90, 90, 255))
+    add_axis_label([0, a, 0], "depth (fwd)", (90, 255, 90, 255))
+    vertical_label = "vertical (inverted)" if args.invert_vertical else "vertical"
+    add_axis_label([0, 0, a], vertical_label, (90, 90, 255, 255))
 
     scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), size=args.point_size, pxMode=True)
     # Default 'additive' glOptions blends overlapping points into a single
@@ -163,8 +223,9 @@ def main():
         xyz, frame_cnt = receiver.get_latest()
         if xyz is None:
             return
-        colors = make_banded_colors(xyz[:, 2], args.bands)
-        scatter.setData(pos=xyz, color=colors, size=args.point_size)
+        colors = make_banded_colors(xyz[:, 2], args.bands)  # color by native depth (sensor Z)
+        plotted = remap_for_display(xyz, args.invert_vertical)
+        scatter.setData(pos=plotted, color=colors, size=args.point_size)
 
         render_frame_count += 1
         elapsed = render_window_start.elapsed() / 1000.0

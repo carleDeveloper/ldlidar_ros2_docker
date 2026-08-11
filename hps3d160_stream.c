@@ -28,14 +28,25 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "HPS3DUser_IF.h"
 
+#define RECONNECT_INTERVAL_S 2
+#define SEND_TIMEOUT_S 2
+
 static int g_handle = -1;
 static int g_sock = -1;
 static volatile bool g_running = true;
+static volatile bool g_connected = false;
+static time_t g_last_reconnect_attempt = 0;
+static const char *g_host = NULL;
+static const char *g_port = NULL;
 static HPS3D_MeasureData_t g_measureData;
+
+static bool try_connect(void);
+static void maybe_reconnect(void);
 
 // Rolling FPS accounting, printed to stderr once per second.
 static uint32_t g_frames_this_second = 0;
@@ -58,7 +69,11 @@ static bool send_all(int sock, const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send(sock, p + sent, len - sent, 0);
+        // MSG_NOSIGNAL: don't let a send() to a peer that already closed
+        // the connection raise SIGPIPE, which by default terminates the
+        // whole process -- we want to see the -1/EPIPE return instead so
+        // the caller can trigger a reconnect.
+        ssize_t n = send(sock, p + sent, len - sent, MSG_NOSIGNAL);
         if (n <= 0) {
             perror("send");
             return false;
@@ -69,7 +84,10 @@ static bool send_all(int sock, const void *buf, size_t len) {
 }
 
 static void send_point_cloud_frame(const HPS3D_DepthData_t *depth) {
-    if (g_sock < 0) return;
+    if (!g_connected) {
+        maybe_reconnect();
+        if (!g_connected) return;  // still down; drop this frame and try again next time
+    }
 
     uint32_t points = depth->point_cloud_data.points;
     uint16_t width = depth->point_cloud_data.width;
@@ -86,8 +104,10 @@ static void send_point_cloud_frame(const HPS3D_DepthData_t *depth) {
 
     if (!send_all(g_sock, header, sizeof(header)) ||
         !send_all(g_sock, depth->point_cloud_data.point_data, payload_bytes)) {
-        fprintf(stderr, "[hps3d160_stream] send failed, stopping\n");
-        g_running = false;
+        fprintf(stderr, "[hps3d160_stream] send failed, will attempt to reconnect\n");
+        close(g_sock);
+        g_sock = -1;
+        g_connected = false;
         return;
     }
 
@@ -140,7 +160,36 @@ static int connect_to_receiver(const char *host, const char *port) {
         sock = -1;
     }
     freeaddrinfo(res);
+
+    if (sock >= 0) {
+        // Bound send() so a dead/unresponsive peer (e.g. viewer killed
+        // without a clean TCP close) doesn't block the capture callback
+        // indefinitely -- we want to detect it and reconnect instead.
+        struct timeval tv = {.tv_sec = SEND_TIMEOUT_S, .tv_usec = 0};
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
     return sock;
+}
+
+// Attempts one (non-blocking-retry) connection to the receiver. On success,
+// updates g_sock/g_connected and returns true.
+static bool try_connect(void) {
+    int sock = connect_to_receiver(g_host, g_port);
+    if (sock < 0) return false;
+    g_sock = sock;
+    g_connected = true;
+    printf("[hps3d160_stream] connected to receiver %s:%s\n", g_host, g_port);
+    return true;
+}
+
+// Rate-limited reconnect attempt, safe to call from the capture callback on
+// every frame without hammering connect() while the receiver is down.
+static void maybe_reconnect(void) {
+    time_t now = time(NULL);
+    if (now - g_last_reconnect_attempt < RECONNECT_INTERVAL_S) return;
+    g_last_reconnect_attempt = now;
+    fprintf(stderr, "[hps3d160_stream] receiver unavailable, retrying %s:%s...\n", g_host, g_port);
+    try_connect();
 }
 
 int main(int argc, char **argv) {
@@ -148,12 +197,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s <receiver-host> <receiver-port> [serial-device]\n", argv[0]);
         return 1;
     }
-    const char *host = argv[1];
-    const char *port = argv[2];
+    g_host = argv[1];
+    g_port = argv[2];
     const char *device = (argc > 3) ? argv[3] : "/dev/ttyACM0";
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGPIPE, SIG_IGN);  // belt-and-suspenders alongside MSG_NOSIGNAL
 
     printf("SDK Ver: %s\n", HPS3D_GetSDKVersion());
 
@@ -168,13 +218,16 @@ int main(int argc, char **argv) {
     }
     printf("Device version: %s\n", HPS3D_GetDeviceVersion(g_handle));
 
-    printf("Connecting to receiver at %s:%s ...\n", host, port);
-    g_sock = connect_to_receiver(host, port);
-    if (g_sock < 0) {
-        fprintf(stderr, "Failed to connect to receiver %s:%s\n", host, port);
+    printf("Connecting to receiver at %s:%s ...\n", g_host, g_port);
+    while (g_running && !try_connect()) {
+        fprintf(stderr, "[hps3d160_stream] receiver not available yet, retrying in %ds...\n",
+                RECONNECT_INTERVAL_S);
+        sleep(RECONNECT_INTERVAL_S);
+    }
+    if (!g_running) {
         HPS3D_CloseDevice(g_handle);
         HPS3D_MeasureDataFree(&g_measureData);
-        return 1;
+        return 0;
     }
     printf("Connected. Streaming point cloud frames (Ctrl-C to stop)...\n");
 

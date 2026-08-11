@@ -52,6 +52,48 @@ without editing the file:
 docker compose build --build-arg LDLIDAR_BRANCH=v2.3.0
 ```
 
+## Deployment walkthrough (cross-build from an x86_64 host)
+End-to-end steps used to deploy to the UNO Q. These assume an SSH alias `uno-q`
+in `~/.ssh/config` (`HostName 192.168.1.50`, `User arduino`).
+1. One-time: enable arm64 emulation on the x86_64 host (does not always survive
+   a reboot — re-run if `exec format error` reappears):
+   ```bash
+   docker run --privileged --rm tonistiigi/binfmt --install arm64
+   ```
+2. Cross-build the arm64 image (slow under emulation):
+   ```bash
+   docker compose build
+   ```
+3. Export the image to a tarball:
+   ```bash
+   docker save ldlidar_stl_ros2:jazzy-arm64 -o ldlidar_stl_ros2_jazzy_arm64.tar
+   ```
+4. Transfer to the board and load it into the board's Docker:
+   ```bash
+   scp ldlidar_stl_ros2_jazzy_arm64.tar uno-q:~/
+   ssh uno-q docker load -i ~/ldlidar_stl_ros2_jazzy_arm64.tar
+   ```
+5. Verify native execution on the board (no LiDAR required):
+   ```bash
+   ssh uno-q 'docker run --rm ldlidar_stl_ros2:jazzy-arm64 \
+     bash -lc "uname -m; ros2 pkg executables ldlidar_stl_ros2"'
+   ```
+   Expect `aarch64` and the two executables (`ldlidar_stl_ros2`,
+   `ldlidar_stl_ros2_node`) with no `exec format error`.
+6. Remove the tarball once loaded (see Cleanup below).
+
+The `build-arm64.sh` helper wraps steps 2–3 (build + save) once emulation from
+step 1 is in place.
+
+## Cleanup
+The exported image tarball is large (~1.3 GB) and only needed for transfer.
+After the image is loaded on the board, remove both copies:
+```bash
+rm -f ldlidar_stl_ros2_jazzy_arm64.tar          # on the dev host
+ssh uno-q rm -f ~/ldlidar_stl_ros2_jazzy_arm64.tar  # on the board
+```
+`*.tar` is git-ignored, so tarballs are never committed.
+
 ## Run
 
 ### 1. Grant access to the serial device (on the UNO Q)

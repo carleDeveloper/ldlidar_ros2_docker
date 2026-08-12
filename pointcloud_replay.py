@@ -14,7 +14,13 @@ roughly one frame's worth of memory rather than being slurped up front.
 
 Usage:
     python3 pointcloud_replay.py RECORDING.npz [--fps 30] [--point-size 2]
-                                 [--bands 10] [--invert-vertical] [--mirror-lr]
+                                 [--bands 10] [--no-invert-vertical] [--no-mirror-lr]
+                                 [--no-swap-xy] [--rotate 25]
+
+Note: --swap-xy, --mirror-lr, --invert-vertical default to on and --rotate
+defaults to 25 degrees, matching this sensor's actual mounting as determined
+empirically. Pass the --no-* form of a boolean flag, or a different --rotate
+value, to override for a different mounting.
 
 Controls:
     space        pause / resume
@@ -63,17 +69,24 @@ def main():
     parser.add_argument("--edge-filter-mm", type=float, default=300.0,
                         help="hide 'flying pixel' points whose depth jumps by more than this many "
                              "mm from an adjacent pixel in the sensor's scan grid; 0 disables")
-    parser.add_argument("--invert-vertical", action="store_true",
-                        help="flip the vertical axis if the scene renders upside down")
-    parser.add_argument("--mirror-lr", action="store_true",
-                        help="flip left/right if it doesn't match reality")
-    parser.add_argument("--swap-xy", action="store_true",
+    # Defaults below (--swap-xy, --mirror-lr, --invert-vertical, --rotate 25) match this
+    # sensor's actual mounting, determined empirically by moving to a known physical side
+    # of the sensor and watching where the point rendered. Use the --no-* form of the
+    # boolean flags, or a different --rotate value, to override for a different mounting.
+    parser.add_argument("--invert-vertical", action=argparse.BooleanOptionalAction, default=True,
+                        help="flip the vertical axis if the scene renders upside down "
+                             "(default: on; pass --no-invert-vertical to disable)")
+    parser.add_argument("--mirror-lr", action=argparse.BooleanOptionalAction, default=True,
+                        help="flip left/right if it doesn't match reality "
+                             "(default: on; pass --no-mirror-lr to disable)")
+    parser.add_argument("--swap-xy", action=argparse.BooleanOptionalAction, default=True,
                         help="swap the native X/Y axes if left/right motion shows up as vertical motion "
                              "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
-                             "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after")
-    parser.add_argument("--rotate", type=float, default=0.0, metavar="DEGREES",
+                             "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after "
+                             "(default: on; pass --no-swap-xy to disable)")
+    parser.add_argument("--rotate", type=float, default=25.0, metavar="DEGREES",
                         help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
-                             "sensor was mounted facing a different direction than assumed")
+                             "sensor was mounted facing a different direction than assumed (default: 25)")
     parser.add_argument("--invert-depth", action="store_true",
                         help="flip forward/backward if depth still comes out backwards after --rotate "
                              "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")

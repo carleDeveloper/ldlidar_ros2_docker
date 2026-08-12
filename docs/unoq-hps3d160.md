@@ -142,14 +142,23 @@ python3 pointcloud_replay.py capture.npz --fps 30
 Replay controls: space pauses/resumes, left/right steps a single frame,
 home/end jumps to the first/last frame; the mouse orbits/zooms/pans as in
 the live viewer. Playback holds on the final frame unless `--loop` is
-given. The rendering flags (`--point-size`, `--bands`, `--invert-vertical`,
-`--mirror-lr`, `--swap-xy`, `--rotate`, `--invert-depth`, `--axis-size`,
-`--edge-filter-mm`) behave identically in both tools, including their
-defaults (see Axis orientation defaults above), and `pointcloud_replay.py`
-imports the color-banding and axis-remapping helpers from
-`pointcloud_viewer.py` rather than duplicating them, so the two can't
+given. The rendering flags (`--fps`, `--point-size`, `--bands`,
+`--edge-filter-mm`, `--invert-vertical`, `--mirror-lr`, `--swap-xy`,
+`--rotate`, `--invert-depth`, `--axis-size`) and the scene/camera flags
+(`--grid-size`, `--grid-spacing`, `--camera-distance`, `--elevation`,
+`--azimuth`) behave identically in both tools, including their defaults
+(see Axis orientation defaults above). They're defined once, in
+`add_visualization_args()` in `pointcloud_viewer.py`, which
+`pointcloud_replay.py` imports along with the color-banding and
+axis-remapping helpers rather than duplicating them -- so the two can't
 drift apart on the mirroring subtleties documented in
-`remap_for_display()`. It does mean both files need to sit side by side.
+`remap_for_display()`, nor on a default silently changed in only one
+place. It does mean both files need to sit side by side.
+
+Only genuinely tool-specific flags live in each script: `--host`,
+`--port`, and `--record` for the live viewer, `--loop` and
+`--status-height` (height of the replay's frame-counter label, default
+2.5x `--axis-size`) for the replay.
 
 What gets saved, and the file layout:
 - **Every frame received off the socket** is recorded, not just the ones

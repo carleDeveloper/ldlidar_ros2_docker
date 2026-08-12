@@ -3,10 +3,11 @@
 Replay a point cloud recording saved by `pointcloud_viewer.py --record`.
 
 Standalone in the sense that no sensor, board, or network connection is
-needed -- it only needs the .npz file. The color-banding and axis-remapping
-helpers are imported from pointcloud_viewer rather than copied, so replayed
-frames are rendered with the exact same (hard-won) axis conventions as the
-live view; see remap_for_display()'s docstring there for why that matters.
+needed -- it only needs the .npz file. The color-banding, axis-remapping,
+and argument-definition helpers are imported from pointcloud_viewer rather
+than copied, so replayed frames are rendered with the exact same (hard-won)
+axis conventions -- and accept the same flags and defaults -- as the live
+view; see remap_for_display()'s docstring there for why that matters.
 
 Frames are pulled out of the archive one at a time as they're displayed.
 NpzFile decompresses lazily per member, so a multi-GB recording replays in
@@ -15,7 +16,8 @@ roughly one frame's worth of memory rather than being slurped up front.
 Usage:
     python3 pointcloud_replay.py RECORDING.npz [--fps 30] [--point-size 2]
                                  [--bands 10] [--no-invert-vertical] [--no-mirror-lr]
-                                 [--no-swap-xy] [--rotate 25]
+                                 [--no-swap-xy] [--rotate 25] [--grid-size 2000]
+                                 [--grid-spacing 100] [--camera-distance 2000]
 
 Note: --swap-xy, --mirror-lr, --invert-vertical default to on and --rotate
 defaults to 25 degrees, matching this sensor's actual mounting as determined
@@ -38,7 +40,7 @@ import numpy as np
 import pyqtgraph.opengl as gl
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from pointcloud_viewer import make_banded_colors, remap_for_display
+from pointcloud_viewer import add_visualization_args, make_banded_colors, remap_for_display
 
 FRAME_KEY_RE = re.compile(r"^frame_\d+$")
 
@@ -61,43 +63,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("recording", help="path to a .npz recording")
-    parser.add_argument("--fps", type=float, default=30.0, help="playback rate")
-    parser.add_argument("--point-size", type=float, default=2.0,
-                        help="point size in pixels (smaller avoids overlapping points blending into a blob)")
-    parser.add_argument("--bands", type=int, default=10,
-                        help="number of discrete distance color bands (near=red, far=violet)")
-    parser.add_argument("--edge-filter-mm", type=float, default=300.0,
-                        help="hide 'flying pixel' points whose depth jumps by more than this many "
-                             "mm from an adjacent pixel in the sensor's scan grid; 0 disables")
-    # Defaults below (--swap-xy, --mirror-lr, --invert-vertical, --rotate 25) match this
-    # sensor's actual mounting, determined empirically by moving to a known physical side
-    # of the sensor and watching where the point rendered. Use the --no-* form of the
-    # boolean flags, or a different --rotate value, to override for a different mounting.
-    parser.add_argument("--invert-vertical", action=argparse.BooleanOptionalAction, default=True,
-                        help="flip the vertical axis if the scene renders upside down "
-                             "(default: on; pass --no-invert-vertical to disable)")
-    parser.add_argument("--mirror-lr", action=argparse.BooleanOptionalAction, default=True,
-                        help="flip left/right if it doesn't match reality "
-                             "(default: on; pass --no-mirror-lr to disable)")
-    parser.add_argument("--swap-xy", action=argparse.BooleanOptionalAction, default=True,
-                        help="swap the native X/Y axes if left/right motion shows up as vertical motion "
-                             "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
-                             "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after "
-                             "(default: on; pass --no-swap-xy to disable)")
-    parser.add_argument("--rotate", type=float, default=25.0, metavar="DEGREES",
-                        help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
-                             "sensor was mounted facing a different direction than assumed (default: 25)")
-    parser.add_argument("--invert-depth", action="store_true",
-                        help="flip forward/backward if depth still comes out backwards after --rotate "
-                             "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")
-    parser.add_argument("--axis-size", type=float, default=500.0,
-                        help="length (mm) of the XYZ axis gizmo at the sensor's origin")
-    parser.add_argument("--elevation", type=float, default=20.0,
-                        help="initial camera elevation in degrees (0 = level/front-on, matches the "
-                             "vertical axis exactly; the default 20 tilts down slightly)")
-    parser.add_argument("--azimuth", type=float, default=-60.0,
-                        help="initial camera azimuth in degrees around the vertical axis (0/-90/90/180 "
-                             "give straight-on views; the default -60 is an oblique 3/4 view)")
+    add_visualization_args(parser, fps_help="playback rate")
+    parser.add_argument("--status-height", type=float, default=None, metavar="MM",
+                        help="height (mm) above the origin of the frame-counter label "
+                             "(default: 2.5x --axis-size)")
     parser.add_argument("--loop", action="store_true",
                         help="restart at the end instead of holding on the last frame")
     args = parser.parse_args()
@@ -146,12 +115,13 @@ def main():
 
     view = gl.GLViewWidget()
     view.setWindowTitle(f"Replay: {args.recording}")
-    view.setCameraPosition(distance=2000, elevation=args.elevation, azimuth=args.azimuth)
+    view.setCameraPosition(distance=args.camera_distance, elevation=args.elevation,
+                           azimuth=args.azimuth)
     view.show()
 
     grid = gl.GLGridItem()
-    grid.setSize(2000, 2000)
-    grid.setSpacing(100, 100)
+    grid.setSize(args.grid_size, args.grid_size)
+    grid.setSpacing(args.grid_spacing, args.grid_spacing)
     view.addItem(grid)
 
     axis = gl.GLAxisItem()
@@ -171,7 +141,9 @@ def main():
     scatter.setGLOptions("opaque")
     view.addItem(scatter)
 
-    status = gl.GLTextItem(pos=[0, 0, args.axis_size * 2.5], text="", color=(220, 220, 220, 255))
+    # Keyed off the axis gizmo by default so the label clears it at any --axis-size.
+    status_height = args.status_height if args.status_height is not None else args.axis_size * 2.5
+    status = gl.GLTextItem(pos=[0, 0, status_height], text="", color=(220, 220, 220, 255))
     view.addItem(status)
 
     state = {"index": 0, "paused": False}

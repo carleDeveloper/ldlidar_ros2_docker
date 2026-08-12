@@ -28,7 +28,9 @@ rendered ones) to a compressed NumPy archive. Reload it later with:
 
 Usage:
     python3 pointcloud_viewer.py [--host 0.0.0.0] [--port 5555] [--fps 30]
-                                 [--record capture.npz]
+                                 [--record capture.npz] [--grid-size 2000]
+                                 [--grid-spacing 100] [--camera-distance 2000]
+                                 [--elevation 20] [--azimuth -60]
 """
 import argparse
 import colorsys
@@ -399,44 +401,76 @@ def remap_for_display(xyz: np.ndarray, invert_vertical: bool, mirror_lr: bool,
     return np.stack([horizontal, depth, vertical], axis=-1)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="0.0.0.0", help="address to listen on")
-    parser.add_argument("--port", type=int, default=5555, help="TCP port to listen on")
-    parser.add_argument("--fps", type=float, default=30.0, help="target render rate")
+def add_visualization_args(parser: argparse.ArgumentParser,
+                           fps_help: str = "target render rate"):
+    """Register the rendering/axis/camera flags shared with pointcloud_replay.
+
+    Both tools feed make_banded_colors() and remap_for_display() and are
+    meant to draw an identical scene -- a replay is only trustworthy if it
+    renders its recording the way the live view rendered it at capture time.
+    Two separate copies of this parser drift silently (a default changed in
+    one place still parses fine in the other, it just quietly displays
+    different geometry), so the flags are defined once here and imported by
+    the replay script.
+
+    Only genuinely shared flags belong here. Tool-specific ones (--host,
+    --port, --record for the viewer; --status-height, --loop for the replay)
+    stay with their own parser.
+    """
+    parser.add_argument("--fps", type=float, default=30.0, help=fps_help)
     parser.add_argument("--point-size", type=float, default=2.0,
-                         help="point size in pixels (smaller avoids overlapping points blending into a blob)")
+                        help="point size in pixels (smaller avoids overlapping points blending into a blob)")
     parser.add_argument("--bands", type=int, default=10,
-                         help="number of discrete distance color bands (near=red, far=violet)")
+                        help="number of discrete distance color bands (near=red, far=violet)")
     parser.add_argument("--edge-filter-mm", type=float, default=_FLYING_PIXEL_MAX_NEIGHBOR_DIFF_MM,
-                         help="hide 'flying pixel' points whose depth jumps by more than this many "
-                              "mm from an adjacent pixel in the sensor's scan grid -- removes the "
-                              "liquid/fuzzy blur these cause at moving object edges; 0 disables")
+                        help="hide 'flying pixel' points whose depth jumps by more than this many "
+                             "mm from an adjacent pixel in the sensor's scan grid -- removes the "
+                             "liquid/fuzzy blur these cause at moving object edges; 0 disables")
     # Defaults below (--swap-xy, --mirror-lr, --invert-vertical, --rotate 25) match this
     # sensor's actual mounting, determined empirically by moving to a known physical side
     # of the sensor and watching where the point rendered. Use the --no-* form of the
     # boolean flags, or a different --rotate value, to override for a different mounting.
     parser.add_argument("--invert-vertical", action=argparse.BooleanOptionalAction, default=True,
-                         help="flip the vertical axis if the scene renders upside down "
-                              "(default: on; pass --no-invert-vertical to disable)")
+                        help="flip the vertical axis if the scene renders upside down "
+                             "(default: on; pass --no-invert-vertical to disable)")
     parser.add_argument("--mirror-lr", action=argparse.BooleanOptionalAction, default=True,
-                         help="flip left/right if it still doesn't match reality after the built-in mirror fix "
-                              "(default: on; pass --no-mirror-lr to disable)")
+                        help="flip left/right if it still doesn't match reality after the built-in mirror fix "
+                             "(default: on; pass --no-mirror-lr to disable)")
     parser.add_argument("--swap-xy", action=argparse.BooleanOptionalAction, default=True,
-                         help="swap the native X/Y axes if left/right motion shows up as vertical motion "
-                              "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
-                              "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after "
-                              "(default: on; pass --no-swap-xy to disable)")
+                        help="swap the native X/Y axes if left/right motion shows up as vertical motion "
+                             "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
+                             "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after "
+                             "(default: on; pass --no-swap-xy to disable)")
     parser.add_argument("--rotate", type=float, default=25.0, metavar="DEGREES",
-                         help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
-                              "sensor is mounted facing a different direction than assumed (default: 25)")
+                        help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
+                             "sensor is mounted facing a different direction than assumed (default: 25)")
     parser.add_argument("--invert-depth", action="store_true",
-                         help="flip forward/backward if depth still comes out backwards after --rotate "
-                              "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")
+                        help="flip forward/backward if depth still comes out backwards after --rotate "
+                             "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")
     parser.add_argument("--axis-size", type=float, default=500.0,
-                         help="length (mm) of the XYZ axis gizmo at the sensor's origin")
+                        help="length (mm) of the XYZ axis gizmo at the sensor's origin")
+    parser.add_argument("--grid-size", type=float, default=2000.0, metavar="MM",
+                        help="width/depth (mm) of the reference ground grid")
+    parser.add_argument("--grid-spacing", type=float, default=100.0, metavar="MM",
+                        help="spacing (mm) between reference grid lines")
+    parser.add_argument("--camera-distance", type=float, default=2000.0, metavar="MM",
+                        help="initial camera distance (mm) from the origin; larger zooms out")
+    parser.add_argument("--elevation", type=float, default=20.0,
+                        help="initial camera elevation in degrees (0 = level/front-on, matches the "
+                             "vertical axis exactly; the default 20 tilts down slightly)")
+    parser.add_argument("--azimuth", type=float, default=-60.0,
+                        help="initial camera azimuth in degrees around the vertical axis (0/-90/90/180 "
+                             "give straight-on views; the default -60 is an oblique 3/4 view)")
+    return parser
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="0.0.0.0", help="address to listen on")
+    parser.add_argument("--port", type=int, default=5555, help="TCP port to listen on")
+    add_visualization_args(parser)
     parser.add_argument("--record", metavar="FILE.npz",
-                         help="save every received frame to a compressed NumPy archive")
+                        help="save every received frame to a compressed NumPy archive")
     args = parser.parse_args()
 
     print("Controls: left-drag to orbit, right-drag/scroll to zoom, middle-drag to pan.")
@@ -486,15 +520,16 @@ def main():
 
     view = gl.GLViewWidget()
     view.setWindowTitle("HPS-3D160 Point Cloud")
-    # Oblique 3/4 view: elevation tilts up/down from the ground plane,
-    # azimuth rotates around the vertical axis. Depth increases along +Y
-    # (into the grid), vertical is +/-Z (up/down).
-    view.setCameraPosition(distance=2000, elevation=20, azimuth=-60)
+    # Oblique 3/4 view by default: elevation tilts up/down from the ground
+    # plane, azimuth rotates around the vertical axis. Depth increases along
+    # +Y (into the grid), vertical is +/-Z (up/down).
+    view.setCameraPosition(distance=args.camera_distance, elevation=args.elevation,
+                           azimuth=args.azimuth)
     view.show()
 
     grid = gl.GLGridItem()
-    grid.setSize(2000, 2000)
-    grid.setSpacing(100, 100)
+    grid.setSize(args.grid_size, args.grid_size)
+    grid.setSpacing(args.grid_spacing, args.grid_spacing)
     view.addItem(grid)
 
     axis = gl.GLAxisItem()

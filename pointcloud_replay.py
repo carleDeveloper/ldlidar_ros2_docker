@@ -67,8 +67,24 @@ def main():
                         help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",
                         help="flip left/right if it doesn't match reality")
+    parser.add_argument("--swap-xy", action="store_true",
+                        help="swap the native X/Y axes if left/right motion shows up as vertical motion "
+                             "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
+                             "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after")
+    parser.add_argument("--rotate", type=float, default=0.0, metavar="DEGREES",
+                        help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
+                             "sensor was mounted facing a different direction than assumed")
+    parser.add_argument("--invert-depth", action="store_true",
+                        help="flip forward/backward if depth still comes out backwards after --rotate "
+                             "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")
     parser.add_argument("--axis-size", type=float, default=500.0,
                         help="length (mm) of the XYZ axis gizmo at the sensor's origin")
+    parser.add_argument("--elevation", type=float, default=20.0,
+                        help="initial camera elevation in degrees (0 = level/front-on, matches the "
+                             "vertical axis exactly; the default 20 tilts down slightly)")
+    parser.add_argument("--azimuth", type=float, default=-60.0,
+                        help="initial camera azimuth in degrees around the vertical axis (0/-90/90/180 "
+                             "give straight-on views; the default -60 is an oblique 3/4 view)")
     parser.add_argument("--loop", action="store_true",
                         help="restart at the end instead of holding on the last frame")
     args = parser.parse_args()
@@ -117,7 +133,7 @@ def main():
 
     view = gl.GLViewWidget()
     view.setWindowTitle(f"Replay: {args.recording}")
-    view.setCameraPosition(distance=2000, elevation=20, azimuth=-60)
+    view.setCameraPosition(distance=2000, elevation=args.elevation, azimuth=args.azimuth)
     view.show()
 
     grid = gl.GLGridItem()
@@ -157,7 +173,8 @@ def main():
         xyz = frame.reshape(-1, 3)
         colors = make_banded_colors(xyz[:, 2], args.bands, width, height,
                                     args.edge_filter_mm)  # color by native depth (sensor Z)
-        scatter.setData(pos=remap_for_display(xyz, args.invert_vertical, args.mirror_lr),
+        scatter.setData(pos=remap_for_display(xyz, args.invert_vertical, args.mirror_lr,
+                                              args.rotate, args.invert_depth, args.swap_xy),
                         color=colors, size=args.point_size)
 
         label = f"frame {idx + 1}/{len(frame_keys)}"

@@ -322,19 +322,36 @@ def make_banded_colors(z: np.ndarray, num_bands: int, width: int = None, height:
     return colors
 
 
-def remap_for_display(xyz: np.ndarray, invert_vertical: bool, mirror_lr: bool) -> np.ndarray:
-    """The sensor's native axes are X=left/right, Y=vertical, Z=depth
-    (forward from the sensor). pyqtgraph's GLViewWidget always treats Z as
-    "up" for its orbit camera and for GLGridItem's ground plane, so we
-    reorder into plotting axes X=left/right, Y=depth, Z=vertical. This
-    makes mouse-drag orbiting behave like a normal 3D viewer (rotate
-    around true vertical, tilt up/down) instead of an arbitrary axis.
+def remap_for_display(xyz: np.ndarray, invert_vertical: bool, mirror_lr: bool,
+                      rotate_deg: float = 0.0, invert_depth: bool = False,
+                      swap_xy: bool = False) -> np.ndarray:
+    """The sensor's native axes are assumed to be X=left/right, Y=vertical,
+    Z=depth (forward from the sensor). pyqtgraph's GLViewWidget always
+    treats Z as "up" for its orbit camera and for GLGridItem's ground
+    plane, so we reorder into plotting axes X=left/right, Y=depth,
+    Z=vertical. This makes mouse-drag orbiting behave like a normal 3D
+    viewer (rotate around true vertical, tilt up/down) instead of an
+    arbitrary axis.
 
     IMPORTANT: swapping two axes (Y<->Z here) is a single transposition,
     which always reverses handedness -- i.e. it mirrors the scene into its
     mirror image, not just a harmless relabeling. We negate X below to
     compensate and restore a proper (non-mirrored) 3D scene. Without this,
     every previous version of this function was rendering a mirror image.
+
+    `swap_xy` (--swap-xy) handles a *third* possible mismatch, distinct
+    from the two ambiguities below: the sensor may be physically mounted
+    rolled 90 degrees relative to what the code assumes (e.g. landscape
+    vs. portrait), so native X and Y are transposed -- left/right motion
+    shows up as vertical motion on screen (or vice versa) instead of a
+    sign flip. No amount of --invert-vertical/--mirror-lr/--rotate can fix
+    a transposition, since those only flip signs or yaw in the
+    horizontal/depth plane; --swap-xy swaps which native axis feeds
+    "horizontal" vs. "vertical" before those sign fixes are applied.
+    Verify empirically: move to one physical side of the sensor -- if the
+    point moves along the vertical (top/bottom) axis on screen instead of
+    left/right, restart with --swap-xy, then re-check --invert-vertical /
+    --mirror-lr since swapping axes can also flip which flag you need.
 
     Two genuinely unresolvable-from-code ambiguities remain, since we have
     no ground truth for the sensor's exact mounting/scan-line convention:
@@ -344,13 +361,42 @@ def remap_for_display(xyz: np.ndarray, invert_vertical: bool, mirror_lr: bool) -
       with --mirror-lr if left/right still doesn't match reality. Verify
       empirically: place an object to one known physical side of the
       sensor and check which side it renders on.
+
+    `rotate_deg` (--rotate) additionally yaws the whole scene around the
+    vertical axis by a fixed angle. Unlike the two ambiguities above, this
+    isn't a correctness fix -- it's for when the sensor itself is mounted
+    facing a different direction than "straight ahead" (e.g. bolted to a
+    side wall), so the scene comes in sideways or backwards relative to
+    the room. Positive angles rotate counterclockwise viewed from above
+    (standard math convention); e.g. rotate_deg=-90 turns what the sensor
+    reports as "depth" into "left/right".
+
+    `invert_depth` (--invert-depth) negates the depth axis, applied after
+    rotation. This is NOT the same as an extra +/-90 rotate_deg: any pure
+    rotation by a multiple of 90 degrees swaps horizontal and depth
+    *together with* a negation on one of them (that's what makes it a
+    rotation rather than a mirror -- a rotation preserves handedness, a
+    swap-with-no-negation reverses it, same as the Y<->Z handedness issue
+    described above). If horizontal ends up correct after some rotate_deg
+    but depth still comes out backwards, no rotate_deg value can fix that
+    alone; --invert-depth supplies the missing mirror.
     """
     x = xyz[:, 0]
     y = xyz[:, 1]
     z = xyz[:, 2]
+    if swap_xy:
+        x, y = y, x
     vertical = -y if invert_vertical else y
     horizontal = x if mirror_lr else -x
-    return np.stack([horizontal, z, vertical], axis=-1)
+    depth = z
+    if rotate_deg:
+        theta = np.radians(rotate_deg)
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        horizontal, depth = (horizontal * cos_t - depth * sin_t,
+                             horizontal * sin_t + depth * cos_t)
+    if invert_depth:
+        depth = -depth
+    return np.stack([horizontal, depth, vertical], axis=-1)
 
 
 def main():
@@ -370,6 +416,16 @@ def main():
                          help="flip the vertical axis if the scene renders upside down")
     parser.add_argument("--mirror-lr", action="store_true",
                          help="flip left/right if it still doesn't match reality after the built-in mirror fix")
+    parser.add_argument("--swap-xy", action="store_true",
+                         help="swap the native X/Y axes if left/right motion shows up as vertical motion "
+                              "on screen (or vice versa) -- indicates the sensor is mounted rolled 90 "
+                              "degrees from what's assumed; re-check --invert-vertical/--mirror-lr after")
+    parser.add_argument("--rotate", type=float, default=0.0, metavar="DEGREES",
+                         help="yaw the scene by this many degrees around the vertical axis, e.g. if the "
+                              "sensor is mounted facing a different direction than assumed")
+    parser.add_argument("--invert-depth", action="store_true",
+                         help="flip forward/backward if depth still comes out backwards after --rotate "
+                              "(a rotation alone can't fix this -- see remap_for_display()'s docstring)")
     parser.add_argument("--axis-size", type=float, default=500.0,
                          help="length (mm) of the XYZ axis gizmo at the sensor's origin")
     parser.add_argument("--record", metavar="FILE.npz",
@@ -379,8 +435,11 @@ def main():
     print("Controls: left-drag to orbit, right-drag/scroll to zoom, middle-drag to pan.")
     print("Axis legend at the sensor's origin (0,0,0): "
           "RED = X (left/right), GREEN = depth (forward from sensor), BLUE = vertical"
+          + (" [swapped]" if args.swap_xy else "")
           + (" [inverted]" if args.invert_vertical else "")
           + (" [mirrored]" if args.mirror_lr else "") + ".")
+    print("If left/right motion on screen shows up as vertical motion (or vice versa), "
+          "restart with --swap-xy.")
     print("If the scene looks upside down, restart with --invert-vertical.")
     print("If left/right still doesn't match reality, restart with --mirror-lr.")
 
@@ -440,7 +499,8 @@ def main():
         view.addItem(label)
 
     a = args.axis_size * 1.05
-    add_axis_label([a, 0, 0], "X: left/right", (255, 90, 90, 255))
+    horizontal_label = "X: left/right (swapped)" if args.swap_xy else "X: left/right"
+    add_axis_label([a, 0, 0], horizontal_label, (255, 90, 90, 255))
     add_axis_label([0, a, 0], "depth (fwd)", (90, 255, 90, 255))
     vertical_label = "vertical (inverted)" if args.invert_vertical else "vertical"
     add_axis_label([0, 0, a], vertical_label, (90, 90, 255, 255))
@@ -462,7 +522,8 @@ def main():
             return
         # color by native depth (sensor Z)
         colors = make_banded_colors(xyz[:, 2], args.bands, width, height, args.edge_filter_mm)
-        plotted = remap_for_display(xyz, args.invert_vertical, args.mirror_lr)
+        plotted = remap_for_display(xyz, args.invert_vertical, args.mirror_lr, args.rotate, args.invert_depth,
+                                    args.swap_xy)
         scatter.setData(pos=plotted, color=colors, size=args.point_size)
 
         render_frame_count += 1

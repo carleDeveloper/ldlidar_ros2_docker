@@ -71,6 +71,40 @@ device's HDR/exposure settings via the vendor's Windows client software.
 Both `hps3d160_stream` and `pointcloud_viewer.py` auto-reconnect (see
 code comments), so they can be started/restarted in either order.
 
+### Axis orientation defaults
+`remap_for_display()` (shared by both tools) turns the sensor's raw XYZ
+into a display-friendly orientation. It has no way to know the sensor's
+actual physical mounting on its own, so it exposes four flags to correct
+for it: `--swap-xy`, `--mirror-lr`, `--invert-vertical`, and `--rotate`.
+
+As shipped, these default to the mounting verified empirically for this
+setup (move to a known physical side of the sensor and check where the
+point renders): `--swap-xy`, `--mirror-lr`, and `--invert-vertical` all
+default **on**, and `--rotate` defaults to **25** degrees. If you're
+running a differently-mounted HPS-3D160, override with the boolean
+flags' `--no-` form, and/or a different `--rotate` value:
+```bash
+python3 pointcloud_viewer.py --port 5555 \
+  --no-swap-xy --no-mirror-lr --no-invert-vertical --rotate 0
+```
+- `--swap-xy` / `--no-swap-xy`: swaps which native axis feeds
+  horizontal vs. vertical on screen -- needed if the sensor is mounted
+  rolled 90 degrees from what's assumed (left/right motion shows up as
+  vertical motion, or vice versa). No combination of the other three
+  flags can fix this, since they only flip signs or yaw in the
+  horizontal/depth plane.
+- `--mirror-lr` / `--no-mirror-lr`: flips which physical side renders as
+  "left".
+- `--invert-vertical` / `--no-invert-vertical`: flips the vertical axis
+  if the scene renders upside down.
+- `--rotate DEGREES` (default 25; not boolean, just pass a different
+  value): yaws the scene around the vertical axis, for a sensor bolted
+  facing a direction other than "straight ahead".
+- `--invert-depth` (default off, still a plain flag): negates depth if
+  it comes out backwards after `--rotate`; see `remap_for_display()`'s
+  docstring in `pointcloud_viewer.py` for why this is a separate flag
+  from `--rotate` rather than just another angle.
+
 ### Auto-starting the streamer on boot
 `hps3d160-stream.service` runs `hps3d160_stream` automatically on the
 UNO Q, after `usb-role-host.service` and networking are up, and restarts
@@ -109,11 +143,13 @@ Replay controls: space pauses/resumes, left/right steps a single frame,
 home/end jumps to the first/last frame; the mouse orbits/zooms/pans as in
 the live viewer. Playback holds on the final frame unless `--loop` is
 given. The rendering flags (`--point-size`, `--bands`, `--invert-vertical`,
-`--mirror-lr`, `--axis-size`, `--edge-filter-mm`) behave identically in
-both tools, and `pointcloud_replay.py` imports the color-banding and
-axis-remapping helpers from `pointcloud_viewer.py` rather than duplicating
-them, so the two can't drift apart on the mirroring subtleties documented
-in `remap_for_display()`. It does mean both files need to sit side by side.
+`--mirror-lr`, `--swap-xy`, `--rotate`, `--invert-depth`, `--axis-size`,
+`--edge-filter-mm`) behave identically in both tools, including their
+defaults (see Axis orientation defaults above), and `pointcloud_replay.py`
+imports the color-banding and axis-remapping helpers from
+`pointcloud_viewer.py` rather than duplicating them, so the two can't
+drift apart on the mirroring subtleties documented in
+`remap_for_display()`. It does mean both files need to sit side by side.
 
 What gets saved, and the file layout:
 - **Every frame received off the socket** is recorded, not just the ones
